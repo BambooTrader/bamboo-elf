@@ -69,8 +69,8 @@ pub struct RiskLimitsConfig {
     pub max_position_size_usd: Money,
     #[serde(deserialize_with = "deserialize_usd_money")]
     pub max_portfolio_exposure_usd: Money,
-    pub max_concentration_pct: u8,
-    pub max_drawdown_pct: u8,
+    pub max_concentration_pct: f64,
+    pub max_drawdown_pct: f64,
     pub order_rate_limit_per_min: u32,
     pub kill_switch_enabled: bool,
 }

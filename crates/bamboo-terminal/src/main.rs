@@ -89,8 +89,9 @@ async fn run_app(config: AppConfig) -> Result<()> {
         let b = bus.clone();
         let s = shutdown.clone();
         let c = config.cycle.clone();
+        let max_focus = config.universe.max_focus_set;
         tokio::spawn(async move {
-            bamboo_runtime::agents::run_cycle_manager(b, c, s).await;
+            bamboo_runtime::agents::run_cycle_manager(b, c, max_focus, s).await;
         });
     }
 

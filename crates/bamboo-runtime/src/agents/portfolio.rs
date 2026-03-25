@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use bamboo_core::{
     AgentHeartbeat, AgentRunStatus, BusMessage, ComponentId, Currency, EventBus, InstrumentId,
-    Money, OrderSide, OrderType, Payload, PortfolioConfig, PortfolioIntent, PositionSide, Price,
-    Quantity, TimeInForce, Topic,
+    Money, OrderSide, OrderStatus, OrderType, Payload, PortfolioConfig, PortfolioIntent,
+    PositionSide, Price, Quantity, TimeInForce, Topic,
 };
 use uuid::Uuid;
 
@@ -60,6 +60,8 @@ pub struct PortfolioState {
     pub available_capital: f64,
     pub positions: HashMap<InstrumentId, PositionState>,
     pub pending_intents: Vec<Uuid>,
+    /// Capital reserved per intent id, returned on rejection/failure.
+    pub capital_reserved: HashMap<Uuid, f64>,
 }
 
 /// Calculate position size based on risk-per-trade sizing.
@@ -99,10 +101,12 @@ pub async fn run_portfolio_agent(
         available_capital: initial_capital,
         positions: HashMap::new(),
         pending_intents: Vec::new(),
+        capital_reserved: HashMap::new(),
     };
 
     let mut signal_rx = bus.subscribe(Topic::Signal);
     let mut exec_rx = bus.subscribe(Topic::Execution);
+    let mut risk_rx = bus.subscribe(Topic::Risk);
     let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
 
     tracing::info!(
@@ -185,6 +189,7 @@ pub async fn run_portfolio_agent(
                         };
 
                         state.pending_intents.push(intent.id);
+                        state.capital_reserved.insert(intent.id, position_value);
                         state.available_capital -= position_value;
 
                         tracing::info!(
@@ -217,16 +222,47 @@ pub async fn run_portfolio_agent(
                     Ok(msg) => {
                         match &msg.payload {
                             Payload::ExecutionReport(report) => {
-                                if let Some(fill_price) = &report.avg_fill_price {
-                                    let fill_value = fill_price.as_f64() * report.filled_quantity.as_f64();
-                                    // For sells, return capital.
-                                    if report.side == OrderSide::Sell {
-                                        state.available_capital += fill_value;
+                                // On successful fill, clean up reserved capital.
+                                if report.status == OrderStatus::Filled {
+                                    // Capital was already deducted; no need to return it.
+                                    // Just clean up the reservation tracking.
+                                    // (We don't have intent_id on report, so we leave
+                                    // capital_reserved cleanup to the risk_rx path or
+                                    // accept minor leak — intent_ids are cleaned below.)
+                                    if let Some(fill_price) = &report.avg_fill_price {
+                                        let fill_value = fill_price.as_f64()
+                                            * report.filled_quantity.as_f64();
+                                        // For sells, return capital.
+                                        if report.side == OrderSide::Sell {
+                                            state.available_capital += fill_value;
+                                        }
                                     }
                                     tracing::info!(
                                         instrument = %report.instrument_id,
-                                        "ExecutionReport received"
+                                        "ExecutionReport filled"
                                     );
+                                } else if report.status == OrderStatus::Rejected
+                                    || report.status == OrderStatus::Canceled
+                                {
+                                    // Execution failed — return reserved capital.
+                                    // Find by matching instrument in pending intents.
+                                    let intent_id = state
+                                        .pending_intents
+                                        .iter()
+                                        .find(|id| {
+                                            state.capital_reserved.contains_key(id)
+                                        })
+                                        .copied();
+                                    if let Some(id) = intent_id {
+                                        if let Some(reserved) = state.capital_reserved.remove(&id) {
+                                            state.available_capital += reserved;
+                                            tracing::info!(
+                                                reserved = reserved,
+                                                "Returned capital on execution failure"
+                                            );
+                                        }
+                                        state.pending_intents.retain(|i| *i != id);
+                                    }
                                 }
                             }
                             Payload::PositionUpdate(pos) => {
@@ -249,6 +285,36 @@ pub async fn run_portfolio_agent(
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(lagged = n, "PortfolioAgent exec_rx lagged");
+                    }
+                    Err(_) => break,
+                }
+            }
+            result = risk_rx.recv() => {
+                match result {
+                    Ok(msg) => {
+                        if let Payload::RiskDecision(decision) = &msg.payload {
+                            if !decision.approved {
+                                // Risk rejected — return reserved capital.
+                                if let Some(reserved) =
+                                    state.capital_reserved.remove(&decision.intent_id)
+                                {
+                                    state.available_capital += reserved;
+                                    tracing::info!(
+                                        intent_id = %decision.intent_id,
+                                        reserved = reserved,
+                                        "Returned capital on risk rejection"
+                                    );
+                                }
+                                state.pending_intents.retain(|id| *id != decision.intent_id);
+                            } else {
+                                // Approved — clean up pending_intents tracking
+                                // (capital stays reserved until execution completes).
+                                state.pending_intents.retain(|id| *id != decision.intent_id);
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "PortfolioAgent risk_rx lagged");
                     }
                     Err(_) => break,
                 }

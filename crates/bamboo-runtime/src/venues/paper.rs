@@ -179,6 +179,15 @@ impl VenueAdapter for PaperVenue {
     fn trading_mode(&self) -> TradingMode {
         TradingMode::Paper
     }
+
+    async fn last_fill_price(&self, venue_order_id: &VenueOrderId) -> Option<Price> {
+        let fills = self.fills.lock().await;
+        fills
+            .iter()
+            .rev()
+            .find(|f| &f.venue_order_id == venue_order_id)
+            .map(|f| f.fill_price)
+    }
 }
 
 #[cfg(test)]

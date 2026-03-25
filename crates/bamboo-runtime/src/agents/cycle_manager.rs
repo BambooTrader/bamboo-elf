@@ -60,6 +60,7 @@ async fn publish_heartbeat(bus: &Arc<dyn EventBus>, status: AgentRunStatus, acti
 pub async fn run_cycle_manager(
     bus: Arc<dyn EventBus>,
     config: CycleConfig,
+    max_focus_set: usize,
     shutdown: ShutdownSignal,
 ) {
     // For demo speed, derive durations from config hours (or use short defaults).
@@ -160,13 +161,21 @@ pub async fn run_cycle_manager(
             break;
         }
 
-        // Build focus set from top findings by score.
+        // Build focus set from top findings by score, respecting max_focus_set config.
         findings.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        state.focus_set = findings
+        let mut focus: Vec<InstrumentId> = findings
             .iter()
-            .take(10)
+            .take(max_focus_set)
             .map(|f| f.instrument_id.clone())
             .collect();
+
+        // Merge must_monitor instruments (positions we're tracking) into focus set.
+        for inst in &state.must_monitor {
+            if !focus.contains(inst) && focus.len() < max_focus_set {
+                focus.push(inst.clone());
+            }
+        }
+        state.focus_set = focus;
 
         tracing::info!(
             cycle = state.cycle_count,

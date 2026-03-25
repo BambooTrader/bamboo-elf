@@ -7,8 +7,8 @@ use std::time::Duration;
 use bamboo_core::{
     AgentHeartbeat, AgentRunStatus, BusMessage, ClientOrderId, ComponentId, EventBus,
     ExecutionOrderIntent, ExecutionReport, InstrumentId, LiquiditySide, OrderSide, OrderStatus,
-    OrderType, Payload, PositionId, PositionSide, PositionUpdate, Price, Quantity, RiskDecision,
-    TimeInForce, Topic, VenueAdapter, VenueOrderId,
+    OrderType, Payload, PortfolioIntent, PositionId, PositionSide, PositionUpdate, Price, Quantity,
+    RiskDecision, Topic, Venue, VenueAdapter, VenueOrderId,
 };
 use bamboo_core::config::ExecutionConfig;
 use uuid::Uuid;
@@ -96,6 +96,9 @@ pub struct ExecutionState {
     pub completed_orders: Vec<OrderState>,
     pub total_orders: u64,
     pub total_fills: u64,
+    /// Pending intents indexed by intent id, used to look up original intent data
+    /// when a RiskDecision arrives.
+    pub pending_intents: HashMap<Uuid, PortfolioIntent>,
 }
 
 impl ExecutionState {
@@ -105,6 +108,7 @@ impl ExecutionState {
             completed_orders: Vec::new(),
             total_orders: 0,
             total_fills: 0,
+            pending_intents: HashMap::new(),
         }
     }
 }
@@ -126,6 +130,7 @@ pub async fn run_execution_agent(
 ) {
     let mut state = ExecutionState::new();
     let mut risk_rx = bus.subscribe(Topic::Risk);
+    let mut intent_rx = bus.subscribe(Topic::Intent);
     let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
 
     tracing::info!(
@@ -153,6 +158,19 @@ pub async fn run_execution_agent(
                     )),
                 ).await;
             }
+            result = intent_rx.recv() => {
+                match result {
+                    Ok(msg) => {
+                        if let Payload::PortfolioIntent(intent) = msg.payload {
+                            state.pending_intents.insert(intent.id, intent);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(lagged = n, "ExecutionAgent intent_rx lagged");
+                    }
+                    Err(_) => break,
+                }
+            }
             result = risk_rx.recv() => {
                 match result {
                     Ok(msg) => {
@@ -162,6 +180,9 @@ pub async fn run_execution_agent(
                                     handle_approved_decision(
                                         &bus, &venue, &config, &mut state, decision,
                                     ).await;
+                                } else {
+                                    // Clean up pending intent on rejection.
+                                    state.pending_intents.remove(&decision.intent_id);
                                 }
                             }
                             Payload::EmergencyAction(_emergency) => {
@@ -199,23 +220,36 @@ async fn handle_approved_decision(
         return;
     }
 
-    // Build an ExecutionOrderIntent from the decision.
-    // NOTE: In a full implementation, the original PortfolioIntent would be
-    // stored alongside the RiskDecision. For now we create a minimal intent.
+    // Look up the original PortfolioIntent by intent_id.
+    let original_intent = match state.pending_intents.remove(&decision.intent_id) {
+        Some(i) => i,
+        None => {
+            tracing::warn!(
+                intent_id = %decision.intent_id,
+                "No pending intent found for approved decision, skipping"
+            );
+            return;
+        }
+    };
+
+    // Build an ExecutionOrderIntent from the original PortfolioIntent and decision.
     let client_order_id = ClientOrderId::new(format!("EXE-{}", Uuid::new_v4()));
+    let quantity = decision
+        .adjusted_quantity
+        .unwrap_or(original_intent.quantity);
+    let venue_id = Venue::new(original_intent.instrument_id.venue());
     let intent = ExecutionOrderIntent {
         id: Uuid::new_v4(),
         decision_id: decision.id,
         client_order_id: client_order_id.clone(),
-        // These fields would be filled from the original PortfolioIntent in a full impl.
-        instrument_id: InstrumentId::new("UNKNOWN"),
-        venue: bamboo_core::Venue::new("UNKNOWN"),
-        side: OrderSide::Buy,
-        order_type: OrderType::Market,
-        quantity: decision.adjusted_quantity.unwrap_or(Quantity::zero(8)),
-        limit_price: None,
-        stop_price: None,
-        time_in_force: TimeInForce::GTC,
+        instrument_id: original_intent.instrument_id.clone(),
+        venue: venue_id,
+        side: original_intent.side,
+        order_type: original_intent.order_type,
+        quantity,
+        limit_price: original_intent.limit_price,
+        stop_price: original_intent.stop_price,
+        time_in_force: original_intent.time_in_force,
         timestamp: now_nanos(),
     };
 
@@ -245,8 +279,10 @@ async fn handle_approved_decision(
             order_state.transition(OrderStatus::Filled);
             order_state.filled_quantity = intent.quantity;
 
-            // Query fill price from venue status (for paper, it is instant).
-            // For simplicity, we set avg_fill_price from the venue_order_id response.
+            // Query fill price from venue (for paper, fills are instant).
+            let fill_price = venue.last_fill_price(&venue_order_id).await;
+            order_state.avg_fill_price = fill_price;
+
             state.total_orders += 1;
             state.total_fills += 1;
 
@@ -258,7 +294,7 @@ async fn handle_approved_decision(
                 status: OrderStatus::Filled,
                 side: intent.side,
                 filled_quantity: intent.quantity,
-                avg_fill_price: None, // Set by venue in real impl.
+                avg_fill_price: fill_price,
                 commission: None,
                 liquidity_side: Some(LiquiditySide::Taker),
                 timestamp: now_nanos(),
@@ -276,7 +312,7 @@ async fn handle_approved_decision(
                 instrument_id: intent.instrument_id.clone(),
                 side: pos_side,
                 quantity: intent.quantity,
-                avg_entry_price: Price::zero(2),
+                avg_entry_price: fill_price.unwrap_or(Price::zero(2)),
                 unrealized_pnl: None,
                 realized_pnl: None,
                 timestamp: now_nanos(),

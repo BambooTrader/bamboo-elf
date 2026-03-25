@@ -5,8 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bamboo_core::{
-    AgentHeartbeat, AgentRunStatus, BusMessage, ComponentId, EventBus, InstrumentId, OrderSide,
-    Payload, ResearchFinding, StrategyConfig, StrategyId, StrategySignal, Topic,
+    AgentHeartbeat, AgentRunStatus, BusMessage, ComponentId, CycleStage, EventBus, InstrumentId,
+    OrderSide, OrderStatus, Payload, ResearchFinding, StrategyConfig, StrategyId, StrategySignal,
+    Topic,
 };
 use uuid::Uuid;
 
@@ -136,6 +137,8 @@ pub async fn run_strategy_agent(
     shutdown: ShutdownSignal,
 ) {
     let mut rx = bus.subscribe(Topic::Signal);
+    let mut system_rx = bus.subscribe(Topic::System);
+    let mut exec_rx = bus.subscribe(Topic::Execution);
     let mut active_signals: HashMap<InstrumentId, StrategySignal> = HashMap::new();
     let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
 
@@ -210,6 +213,44 @@ pub async fn run_strategy_agent(
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!(lagged = n, "StrategyAgent lagged");
                     }
+                    Err(_) => break,
+                }
+            }
+            result = system_rx.recv() => {
+                match result {
+                    Ok(msg) => {
+                        // Clear active_signals when a new Scan cycle begins.
+                        if let Payload::CycleStageChanged(changed) = &msg.payload {
+                            if changed.new_stage == CycleStage::Scan {
+                                let count = active_signals.len();
+                                active_signals.clear();
+                                if count > 0 {
+                                    tracing::info!(
+                                        cleared = count,
+                                        "Cleared active_signals for new scan cycle"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(_) => break,
+                }
+            }
+            result = exec_rx.recv() => {
+                match result {
+                    Ok(msg) => {
+                        // Remove instrument from active_signals on terminal execution states.
+                        if let Payload::ExecutionReport(report) = &msg.payload {
+                            if report.status == OrderStatus::Filled
+                                || report.status == OrderStatus::Rejected
+                                || report.status == OrderStatus::Canceled
+                            {
+                                active_signals.remove(&report.instrument_id);
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(_) => break,
                 }
             }

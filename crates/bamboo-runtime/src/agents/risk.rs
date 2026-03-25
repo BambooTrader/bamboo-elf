@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bamboo_core::{
-    AgentHeartbeat, AgentRunStatus, BusMessage, ComponentId, EventBus, InstrumentId, Payload,
-    PortfolioIntent, RiskDecision, RiskLimitsConfig, Topic,
+    AgentHeartbeat, AgentRunStatus, BusMessage, ComponentId, EventBus, InstrumentId, OrderSide,
+    OrderStatus, Payload, PortfolioIntent, RiskDecision, RiskLimitsConfig, Topic,
 };
 use uuid::Uuid;
 
@@ -139,15 +139,15 @@ pub fn check_risk(
         .unwrap_or(0.0);
     let new_exposure = existing + intent_value;
     let concentration_pct = if state.current_equity > 0.0 {
-        (new_exposure / state.current_equity * 100.0) as u8
+        new_exposure / state.current_equity * 100.0
     } else {
-        100
+        100.0
     };
     if concentration_pct > config.max_concentration_pct {
         return RiskCheckResult {
             approved: false,
             reason: format!(
-                "Concentration {}% exceeds max {}%",
+                "Concentration {:.1}% exceeds max {:.1}%",
                 concentration_pct, config.max_concentration_pct,
             ),
         };
@@ -156,12 +156,12 @@ pub fn check_risk(
     // 6. Drawdown check.
     if state.peak_equity > 0.0 {
         let drawdown_pct =
-            ((state.peak_equity - state.current_equity) / state.peak_equity * 100.0) as u8;
+            (state.peak_equity - state.current_equity) / state.peak_equity * 100.0;
         if drawdown_pct > config.max_drawdown_pct {
             return RiskCheckResult {
                 approved: false,
                 reason: format!(
-                    "Drawdown {}% exceeds max {}%",
+                    "Drawdown {:.1}% exceeds max {:.1}%",
                     drawdown_pct, config.max_drawdown_pct,
                 ),
             };
@@ -273,16 +273,47 @@ pub async fn run_risk_agent(
             result = exec_rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        if let Payload::PositionUpdate(pos) = &msg.payload {
-                            // Update equity tracking from unrealized PnL.
-                            if let Some(pnl) = &pos.unrealized_pnl {
-                                let pnl_value = pnl.amount.as_f64();
-                                // Simplified: adjust current equity.
-                                state.current_equity = state.peak_equity + pnl_value;
-                                if state.current_equity > state.peak_equity {
-                                    state.peak_equity = state.current_equity;
+                        match &msg.payload {
+                            Payload::ExecutionReport(report) => {
+                                // Decrement exposure on sell fills.
+                                if report.side == OrderSide::Sell
+                                    && report.status == OrderStatus::Filled
+                                {
+                                    let fill_value = report.filled_quantity.as_f64();
+                                    state.total_exposure =
+                                        (state.total_exposure - fill_value).max(0.0);
+                                    if let Some(exp) =
+                                        state.exposures.get_mut(&report.instrument_id)
+                                    {
+                                        *exp = (*exp - fill_value).max(0.0);
+                                        if *exp <= 0.0 {
+                                            state
+                                                .exposures
+                                                .remove(&report.instrument_id);
+                                        }
+                                    }
                                 }
                             }
+                            Payload::PositionUpdate(pos) => {
+                                // Remove exposure when position is closed (quantity 0).
+                                if pos.quantity.as_f64() <= 0.0 {
+                                    if let Some(removed) =
+                                        state.exposures.remove(&pos.instrument_id)
+                                    {
+                                        state.total_exposure =
+                                            (state.total_exposure - removed).max(0.0);
+                                    }
+                                }
+                                // Update equity tracking from unrealized PnL.
+                                if let Some(pnl) = &pos.unrealized_pnl {
+                                    let pnl_value = pnl.amount.as_f64();
+                                    state.current_equity = state.peak_equity + pnl_value;
+                                    if state.current_equity > state.peak_equity {
+                                        state.peak_equity = state.current_equity;
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -305,8 +336,8 @@ mod tests {
         RiskLimitsConfig {
             max_position_size_usd: Money::from_f64(10_000.0, Currency::usd()),
             max_portfolio_exposure_usd: Money::from_f64(50_000.0, Currency::usd()),
-            max_concentration_pct: 25,
-            max_drawdown_pct: 10,
+            max_concentration_pct: 25.0,
+            max_drawdown_pct: 10.0,
             order_rate_limit_per_min: 60,
             kill_switch_enabled: true,
         }

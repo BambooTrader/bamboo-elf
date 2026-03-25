@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use crate::enums::{OrderStatus, TradingMode, VenueError};
 use crate::identifiers::VenueOrderId;
 use crate::messages::ExecutionOrderIntent;
+use crate::types::Price;
 
 /// Abstract venue adapter. Implementations live in bamboo-runtime.
 #[async_trait]
@@ -23,4 +24,11 @@ pub trait VenueAdapter: Send + Sync {
 
     /// Get trading mode.
     fn trading_mode(&self) -> TradingMode;
+
+    /// Get the fill price for the last submitted order, if available.
+    /// Used by execution agent to populate avg_fill_price on ExecutionReport.
+    async fn last_fill_price(&self, venue_order_id: &VenueOrderId) -> Option<Price> {
+        let _ = venue_order_id;
+        None
+    }
 }
