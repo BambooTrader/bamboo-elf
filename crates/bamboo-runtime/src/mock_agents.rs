@@ -486,7 +486,7 @@ pub fn spawn_mock_news_feed(
     shutdown: ShutdownSignal,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let headlines = vec![
+        let headlines = [
             ("BTC breaks above key resistance level", "CryptoNews"),
             ("Fed holds interest rates steady", "Reuters"),
             ("SOL DEX volume surges 40%", "DeFiPulse"),

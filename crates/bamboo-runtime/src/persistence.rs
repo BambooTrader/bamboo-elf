@@ -9,6 +9,9 @@ use bamboo_core::{
 
 use crate::agents::execution::OrderState;
 
+/// (equity_raw, equity_precision, capital_raw, capital_precision, timestamp)
+pub type PortfolioRow = (i64, u8, i64, u8, u64);
+
 /// SQLite-backed state store for persistence across restarts.
 pub struct StateStore {
     conn: Connection,
@@ -255,7 +258,7 @@ impl StateStore {
         Ok(())
     }
 
-    pub fn load_portfolio(&self) -> SqlResult<Option<(i64, u8, i64, u8, u64)>> {
+    pub fn load_portfolio(&self) -> SqlResult<Option<PortfolioRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT total_equity_raw, total_equity_precision,
                     available_capital_raw, available_capital_precision, timestamp

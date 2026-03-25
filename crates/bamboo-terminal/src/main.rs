@@ -52,10 +52,8 @@ fn parse_config_arg() -> String {
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i < args.len() {
-        if args[i] == "--config" {
-            if i + 1 < args.len() {
-                return args[i + 1].clone();
-            }
+        if args[i] == "--config" && i + 1 < args.len() {
+            return args[i + 1].clone();
         }
         i += 1;
     }

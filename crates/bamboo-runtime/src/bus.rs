@@ -79,13 +79,10 @@ impl EventBus for LocalBus {
         // Send to the topic-specific channel.
         let topic_count = {
             let topics = self.topics.read().unwrap();
-            match topics.get(&topic) {
-                Some(tx) => match tx.send(msg.clone()) {
-                    Ok(n) => n,
-                    Err(_) => 0, // no receivers — that is fine
-                },
-                None => 0,
-            }
+            topics
+                .get(&topic)
+                .and_then(|tx| tx.send(msg.clone()).ok())
+                .unwrap_or_default()
         };
 
         // Send to the all-channel (best effort).

@@ -384,7 +384,7 @@ fn format_bus_message(msg: &BusMessage) -> String {
             format!("{} tick {:.2}", tick.instrument_id, tick.last.as_f64())
         }
         Payload::NewsItem(news) => {
-            format!("{}", news.title)
+            news.title.clone()
         }
         Payload::StrategySignal(sig) => {
             format!(

@@ -255,8 +255,7 @@ fn render_watchlist(frame: &mut Frame, area: Rect, app: &App) {
             // Check if this symbol is in the focus set
             let in_focus = app
                 .cycle_focus_set
-                .iter()
-                .any(|fs| entry.instrument_id == *fs);
+                .contains(&entry.instrument_id);
 
             let (symbol_style, row_style) = if i == app.watchlist.selected {
                 if in_focus {
