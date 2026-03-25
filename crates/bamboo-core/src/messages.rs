@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::enums::{
-    BarInterval, CycleStage, EmergencyActionType, LiquiditySide, OrderSide, OrderStatus,
-    OrderType, PositionSide, TimeInForce,
+    AgentRunStatus, BarInterval, CycleStage, EmergencyActionType, LiquiditySide, OrderSide,
+    OrderStatus, OrderType, PositionSide, TimeInForce,
 };
 use crate::identifiers::{
     ClientOrderId, InstrumentId, PositionId, StrategyId, VenueOrderId, Venue,
@@ -164,5 +164,23 @@ pub struct EmergencyAction {
     pub action_type: EmergencyActionType,
     pub reason: String,
     pub affected_instruments: Vec<InstrumentId>,
+    pub timestamp: u64,
+}
+
+/// Cycle stage transition notification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CycleStageChanged {
+    pub cycle_id: Uuid,
+    pub new_stage: CycleStage,
+    pub focus_set: Vec<InstrumentId>,
+    pub timestamp: u64,
+}
+
+/// Agent heartbeat for status monitoring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentHeartbeat {
+    pub agent_name: String,
+    pub status: AgentRunStatus,
+    pub last_action: Option<String>,
     pub timestamp: u64,
 }

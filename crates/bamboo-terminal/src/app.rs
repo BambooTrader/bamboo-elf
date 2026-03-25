@@ -4,7 +4,8 @@ use std::collections::VecDeque;
 use bamboo_core::{BusMessage, Payload};
 
 use crate::widgets::{
-    AgentStatus, LogEntry, PanelId, PositionRow, WatchlistState, MAX_LOG_ENTRIES,
+    AgentDetail, AgentStatus, LogEntry, PanelId, PortfolioSummary, PositionRow, WatchlistState,
+    MAX_LOG_ENTRIES,
 };
 
 /// Tab names displayed in the UI.
@@ -14,6 +15,7 @@ pub struct App {
     pub watchlist: WatchlistState,
     pub positions: Vec<PositionRow>,
     pub agents: Vec<AgentStatus>,
+    pub agent_details: Vec<AgentDetail>,
     pub events: VecDeque<LogEntry>,
     pub news_items: Vec<String>,
     pub active_tab: usize,
@@ -21,22 +23,36 @@ pub struct App {
     pub should_quit: bool,
     pub log_scroll: usize,
     pub news_scroll: usize,
+    // Spec 2: Cycle state
+    pub cycle_stage: String,
+    pub cycle_focus_set: Vec<String>,
+    // Spec 2: Portfolio summary
+    pub portfolio_summary: PortfolioSummary,
 }
 
 impl App {
     pub fn new(symbols: &[String], sparkline_window: usize) -> Self {
         let agents = vec![
-            AgentStatus::new("Research", "idle"),
-            AgentStatus::new("Strategy", "idle"),
-            AgentStatus::new("Portfolio", "idle"),
-            AgentStatus::new("Risk", "ok"),
-            AgentStatus::new("Execution", "ready"),
+            AgentStatus::new("CycleManager", "Idle"),
+            AgentStatus::new("Research", "Idle"),
+            AgentStatus::new("Strategy", "Idle"),
+            AgentStatus::new("Portfolio", "Idle"),
+            AgentStatus::new("Risk", "Idle"),
+        ];
+
+        let agent_details = vec![
+            AgentDetail::new("CycleManager"),
+            AgentDetail::new("Research"),
+            AgentDetail::new("Strategy"),
+            AgentDetail::new("Portfolio"),
+            AgentDetail::new("Risk"),
         ];
 
         Self {
             watchlist: WatchlistState::new(symbols, sparkline_window),
             positions: Vec::new(),
             agents,
+            agent_details,
             events: VecDeque::with_capacity(MAX_LOG_ENTRIES),
             news_items: Vec::new(),
             active_tab: 0,
@@ -44,7 +60,16 @@ impl App {
             should_quit: false,
             log_scroll: 0,
             news_scroll: 0,
+            cycle_stage: "Idle".to_string(),
+            cycle_focus_set: Vec::new(),
+            portfolio_summary: PortfolioSummary::default(),
         }
+    }
+
+    /// Initialize portfolio summary from config values.
+    pub fn init_portfolio(&mut self, initial_capital: f64) {
+        self.portfolio_summary.total_capital = initial_capital;
+        self.portfolio_summary.available_capital = initial_capital;
     }
 
     /// Dispatch a bus message to the appropriate state update handler.
@@ -82,6 +107,8 @@ impl App {
                     instrument_id: pos.instrument_id.to_string(),
                     side: format!("{:?}", pos.side),
                     quantity: pos.quantity.to_string(),
+                    entry_price: format!("{:.2}", entry_price),
+                    current_price: String::new(), // updated on next tick
                     pnl: format!("{:+.2}", pnl_val),
                     pnl_pct,
                 };
@@ -96,18 +123,70 @@ impl App {
                 } else {
                     self.positions.push(row);
                 }
+
+                // Recalculate portfolio summary from positions
+                self.recalculate_portfolio_summary();
             }
-            Payload::ExecutionReport(_) => {
-                // Execution reports are logged but no special UI update yet
+            Payload::ExecutionReport(er) => {
+                // Update agent status on execution reports
+                let status_str = format!("{:?}", er.status);
+                self.update_agent_detail("Risk", &format!("Exec: {status_str}"));
             }
-            Payload::StrategySignal(_) => {
-                self.update_agent_status("Strategy", "running");
+            Payload::StrategySignal(sig) => {
+                self.update_agent_status("Strategy", "Running");
+                self.update_agent_detail(
+                    "Strategy",
+                    &format!("{} {:?} conf={:.2}", sig.instrument_id, sig.side, sig.confidence),
+                );
             }
-            Payload::ResearchFinding(_) => {
-                self.update_agent_status("Research", "running");
+            Payload::ResearchFinding(rf) => {
+                self.update_agent_status("Research", "Running");
+                self.update_agent_detail(
+                    "Research",
+                    &format!("{} score={:.2}", rf.instrument_id, rf.score),
+                );
             }
-            Payload::RiskDecision(_) => {
-                self.update_agent_status("Risk", "ok");
+            Payload::RiskDecision(rd) => {
+                let verdict = if rd.approved { "APPROVED" } else { "REJECTED" };
+                self.update_agent_status("Risk", "Running");
+                self.update_agent_detail("Risk", &format!("{verdict}: {}", rd.reason));
+            }
+            Payload::PortfolioIntent(pi) => {
+                self.update_agent_status("Portfolio", "Running");
+                self.update_agent_detail(
+                    "Portfolio",
+                    &format!("{} {:?} qty={}", pi.instrument_id, pi.side, pi.quantity),
+                );
+            }
+            Payload::CycleStageChanged(c) => {
+                self.cycle_stage = format!("{:?}", c.new_stage);
+                self.cycle_focus_set = c
+                    .focus_set
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect();
+                self.update_agent_status("CycleManager", "Running");
+                self.update_agent_detail(
+                    "CycleManager",
+                    &format!("Stage -> {:?}", c.new_stage),
+                );
+            }
+            Payload::AgentHeartbeat(h) => {
+                let status_str = format!("{:?}", h.status);
+                // Update both agent views
+                self.update_agent_status(&h.agent_name, &status_str);
+                if let Some(detail) = self
+                    .agent_details
+                    .iter_mut()
+                    .find(|d| d.name == h.agent_name)
+                {
+                    detail.status = status_str;
+                    detail.message_count += 1;
+                    detail.is_active = true;
+                    if let Some(action) = &h.last_action {
+                        detail.last_action = action.clone();
+                    }
+                }
             }
             _ => {}
         }
@@ -190,6 +269,46 @@ impl App {
         if let Some(agent) = self.agents.iter_mut().find(|a| a.name == name) {
             agent.status = status.to_string();
             agent.is_active = true;
+            agent.message_count += 1;
+        }
+    }
+
+    fn update_agent_detail(&mut self, name: &str, action: &str) {
+        if let Some(detail) = self.agent_details.iter_mut().find(|d| d.name == name) {
+            detail.last_action = action.to_string();
+            detail.message_count += 1;
+            detail.is_active = true;
+        }
+        // Also update the simple agent status last_action
+        if let Some(agent) = self.agents.iter_mut().find(|a| a.name == name) {
+            agent.last_action = action.to_string();
+        }
+    }
+
+    /// Recalculate portfolio summary from current positions.
+    fn recalculate_portfolio_summary(&mut self) {
+        let mut total_exposure = 0.0_f64;
+        let mut total_pnl = 0.0_f64;
+
+        for pos in &self.positions {
+            // Parse pnl from the formatted string
+            if let Ok(pnl) = pos.pnl.parse::<f64>() {
+                total_pnl += pnl;
+            }
+            // Estimate exposure from quantity * entry_price
+            let qty: f64 = pos.quantity.parse().unwrap_or(0.0);
+            let entry: f64 = pos.entry_price.parse().unwrap_or(0.0);
+            total_exposure += qty * entry;
+        }
+
+        self.portfolio_summary.total_exposure = total_exposure;
+        self.portfolio_summary.total_pnl = total_pnl;
+        self.portfolio_summary.available_capital =
+            self.portfolio_summary.total_capital - total_exposure;
+
+        if self.portfolio_summary.total_capital > 0.0 {
+            self.portfolio_summary.total_pnl_pct =
+                (total_pnl / self.portfolio_summary.total_capital) * 100.0;
         }
     }
 }
@@ -251,6 +370,20 @@ fn format_bus_message(msg: &BusMessage) -> String {
         }
         Payload::EmergencyAction(ea) => {
             format!("{:?}: {}", ea.action_type, ea.reason)
+        }
+        Payload::CycleStageChanged(c) => {
+            let focus_str: Vec<String> = c.focus_set.iter().map(|id| id.to_string()).collect();
+            format!(
+                "Stage -> {:?} focus=[{}]",
+                c.new_stage,
+                focus_str.join(", ")
+            )
+        }
+        Payload::AgentHeartbeat(h) => {
+            format!(
+                "{} {:?} action={:?}",
+                h.agent_name, h.status, h.last_action
+            )
         }
     }
 }

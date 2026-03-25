@@ -70,7 +70,8 @@ async fn run_app(config: AppConfig) -> Result<()> {
     // Subscribe to all bus messages for the TUI
     let mut bus_rx = bus.subscribe_all();
 
-    // Spawn mock agents
+    // ── Data sources ────────────────────────────────────────────────────────
+    // Keep synthetic feed and mock news as data sources (they simulate the exchange).
     let symbols = config.universe.default_symbols.clone();
     let tick_interval = Duration::from_millis(config.tui.tick_rate_ms.max(500));
 
@@ -83,34 +84,60 @@ async fn run_app(config: AppConfig) -> Result<()> {
 
     bamboo_runtime::mock_agents::spawn_mock_news_feed(bus.clone(), shutdown.clone());
 
-    // Spawn the full mock agent pipeline: Research -> Strategy -> Portfolio -> Risk -> Execution
+    // ── Real agents (Spec 2) ────────────────────────────────────────────────
+
+    // Cycle Manager
     {
         let b = bus.clone();
         let s = shutdown.clone();
-        tokio::spawn(async move { bamboo_runtime::mock_agents::mock_research(b, s).await });
-    }
-    {
-        let b = bus.clone();
-        let s = shutdown.clone();
-        tokio::spawn(async move { bamboo_runtime::mock_agents::mock_strategy(b, s).await });
-    }
-    {
-        let b = bus.clone();
-        let s = shutdown.clone();
-        tokio::spawn(async move { bamboo_runtime::mock_agents::mock_portfolio(b, s).await });
-    }
-    {
-        let b = bus.clone();
-        let s = shutdown.clone();
-        tokio::spawn(async move { bamboo_runtime::mock_agents::mock_risk(b, s).await });
-    }
-    {
-        let b = bus.clone();
-        let s = shutdown.clone();
-        tokio::spawn(async move { bamboo_runtime::mock_agents::mock_execution(b, s).await });
+        let c = config.cycle.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::agents::run_cycle_manager(b, c, s).await;
+        });
     }
 
-    // Setup terminal
+    // Research Agent
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        let rc = config.research.clone().unwrap_or_default();
+        tokio::spawn(async move {
+            bamboo_runtime::agents::run_research_agent(b, rc, s).await;
+        });
+    }
+
+    // Strategy Agent
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        let sc = config.strategy.clone().unwrap_or_default();
+        tokio::spawn(async move {
+            bamboo_runtime::agents::run_strategy_agent(b, sc, s).await;
+        });
+    }
+
+    // Portfolio Agent
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        let pc = config.portfolio.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::agents::run_portfolio_agent(b, pc, s).await;
+        });
+    }
+
+    // Risk Agent
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        let rc = config.risk.clone();
+        let initial_equity = config.portfolio.initial_capital_usd.amount.as_f64();
+        tokio::spawn(async move {
+            bamboo_runtime::agents::run_risk_agent(b, rc, initial_equity, s).await;
+        });
+    }
+
+    // ── Terminal setup ──────────────────────────────────────────────────────
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -121,6 +148,9 @@ async fn run_app(config: AppConfig) -> Result<()> {
     let sparkline_window = config.tui.sparkline_window;
     let tick_rate = Duration::from_millis(config.tui.tick_rate_ms);
     let mut app = App::new(&symbols, sparkline_window);
+
+    // Initialize portfolio summary from config
+    app.init_portfolio(config.portfolio.initial_capital_usd.amount.as_f64());
 
     // Spawn a task to listen for SIGINT/SIGTERM
     let sig_shutdown = shutdown.clone();

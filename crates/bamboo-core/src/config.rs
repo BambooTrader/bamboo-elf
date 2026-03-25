@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub risk: RiskLimitsConfig,
     pub portfolio: PortfolioConfig,
     pub tui: TuiConfig,
+    pub research: Option<ResearchConfig>,
+    pub strategy: Option<StrategyConfig>,
 }
 
 impl AppConfig {
@@ -75,6 +77,89 @@ pub struct PortfolioConfig {
     #[serde(deserialize_with = "deserialize_usd_money")]
     pub initial_capital_usd: Money,
     pub max_positions: usize,
+    /// Risk percentage per trade (e.g. 1.0 means 1% of portfolio).
+    #[serde(default = "default_risk_pct_per_trade")]
+    pub risk_pct_per_trade: f64,
+}
+
+fn default_risk_pct_per_trade() -> f64 {
+    1.0
+}
+
+/// Research agent configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResearchConfig {
+    pub min_volume_usd: f64,
+    pub max_candidates: usize,
+    pub scan_interval_secs: u64,
+}
+
+impl Default for ResearchConfig {
+    fn default() -> Self {
+        Self {
+            min_volume_usd: 1_000_000.0,
+            max_candidates: 10,
+            scan_interval_secs: 300,
+        }
+    }
+}
+
+/// Strategy agent configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StrategyConfig {
+    pub enabled_strategies: Vec<String>,
+    pub max_concurrent_signals: usize,
+    pub momentum: MomentumParams,
+    pub mean_reversion: MeanReversionParams,
+}
+
+impl Default for StrategyConfig {
+    fn default() -> Self {
+        Self {
+            enabled_strategies: vec!["momentum".to_string(), "mean_reversion".to_string()],
+            max_concurrent_signals: 5,
+            momentum: MomentumParams::default(),
+            mean_reversion: MeanReversionParams::default(),
+        }
+    }
+}
+
+/// Momentum strategy parameters.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MomentumParams {
+    pub min_change_pct: f64,
+    pub hold_hours: u64,
+    pub stop_loss_pct: f64,
+}
+
+impl Default for MomentumParams {
+    fn default() -> Self {
+        Self {
+            min_change_pct: 2.0,
+            hold_hours: 24,
+            stop_loss_pct: 3.0,
+        }
+    }
+}
+
+/// Mean reversion strategy parameters.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MeanReversionParams {
+    pub min_drop_pct: f64,
+    pub target_recovery_pct: f64,
+    pub hold_hours: u64,
+    pub stop_loss_pct: f64,
+}
+
+impl Default for MeanReversionParams {
+    fn default() -> Self {
+        Self {
+            min_drop_pct: 5.0,
+            target_recovery_pct: 3.0,
+            hold_hours: 48,
+            stop_loss_pct: 5.0,
+        }
+    }
 }
 
 /// TUI display configuration.

@@ -144,8 +144,33 @@ pub struct PositionRow {
     pub instrument_id: String,
     pub side: String,
     pub quantity: String,
+    pub entry_price: String,
+    pub current_price: String,
     pub pnl: String,
     pub pnl_pct: f64,
+}
+
+// ── Portfolio summary ──
+
+#[derive(Debug, Clone)]
+pub struct PortfolioSummary {
+    pub total_capital: f64,
+    pub available_capital: f64,
+    pub total_exposure: f64,
+    pub total_pnl: f64,
+    pub total_pnl_pct: f64,
+}
+
+impl Default for PortfolioSummary {
+    fn default() -> Self {
+        Self {
+            total_capital: 0.0,
+            available_capital: 0.0,
+            total_exposure: 0.0,
+            total_pnl: 0.0,
+            total_pnl_pct: 0.0,
+        }
+    }
 }
 
 // ── Agent status ──
@@ -155,6 +180,8 @@ pub struct AgentStatus {
     pub name: String,
     pub status: String,
     pub is_active: bool,
+    pub last_action: String,
+    pub message_count: u32,
 }
 
 impl AgentStatus {
@@ -163,16 +190,52 @@ impl AgentStatus {
             name: name.to_string(),
             status: status.to_string(),
             is_active: false,
+            last_action: String::new(),
+            message_count: 0,
         }
     }
 
     pub fn status_color(&self) -> Color {
         match self.status.as_str() {
-            "running" => Color::Green,
-            "ok" => Color::Green,
-            "ready" => Color::Cyan,
-            "idle" => Color::DarkGray,
-            "error" => Color::Red,
+            "Running" | "running" => Color::Green,
+            "Idle" | "idle" | "ok" | "ready" => Color::Green,
+            "Starting" => Color::Yellow,
+            "Error" | "error" => Color::Red,
+            "Stopped" => Color::DarkGray,
+            _ => Color::White,
+        }
+    }
+}
+
+// ── Agent detail (rich view for Agents tab) ──
+
+#[derive(Debug, Clone)]
+pub struct AgentDetail {
+    pub name: String,
+    pub status: String,
+    pub last_action: String,
+    pub message_count: u32,
+    pub is_active: bool,
+}
+
+impl AgentDetail {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            status: "Idle".to_string(),
+            last_action: String::new(),
+            message_count: 0,
+            is_active: false,
+        }
+    }
+
+    pub fn status_color(&self) -> Color {
+        match self.status.as_str() {
+            "Running" => Color::Green,
+            "Idle" => Color::Green,
+            "Starting" => Color::Yellow,
+            "Error" => Color::Red,
+            "Stopped" => Color::DarkGray,
             _ => Color::White,
         }
     }

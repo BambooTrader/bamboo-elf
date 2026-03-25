@@ -4,8 +4,9 @@ use uuid::Uuid;
 
 use crate::identifiers::ComponentId;
 use crate::messages::{
-    CycleSummary, EmergencyAction, ExecutionOrderIntent, ExecutionReport, KlineBar, MarketTick,
-    NewsItem, PortfolioIntent, PositionUpdate, ResearchFinding, RiskDecision, StrategySignal,
+    AgentHeartbeat, CycleStageChanged, CycleSummary, EmergencyAction, ExecutionOrderIntent,
+    ExecutionReport, KlineBar, MarketTick, NewsItem, PortfolioIntent, PositionUpdate,
+    ResearchFinding, RiskDecision, StrategySignal,
 };
 
 /// Bus topic for message routing.
@@ -35,6 +36,8 @@ pub enum Payload {
     PositionUpdate(PositionUpdate),
     CycleSummary(CycleSummary),
     EmergencyAction(EmergencyAction),
+    CycleStageChanged(CycleStageChanged),
+    AgentHeartbeat(AgentHeartbeat),
 }
 
 /// Envelope for all bus messages.

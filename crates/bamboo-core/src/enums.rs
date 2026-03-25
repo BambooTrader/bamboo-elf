@@ -166,6 +166,25 @@ pub enum FeedStatus {
     Disconnected,
 }
 
+// ── Agent intelligence ──
+
+/// Runtime status of an agent. Contains String in Error variant so it is not Copy.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentRunStatus {
+    Starting,
+    Running,
+    Idle,
+    Error(String),
+    Stopped,
+}
+
+/// Strategy type identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StrategyType {
+    Momentum,
+    MeanReversion,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
