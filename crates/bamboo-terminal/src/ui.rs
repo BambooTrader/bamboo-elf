@@ -13,13 +13,49 @@ use crate::widgets::PanelId;
 pub fn render(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
-    match app.active_tab {
-        0 => render_market_tab(frame, size, app),
-        1 => render_portfolio_tab(frame, size, app),
-        2 => render_agents_tab(frame, size, app),
-        3 => render_logs_tab(frame, size, app),
-        _ => render_market_tab(frame, size, app),
+    if app.safe_mode_active {
+        // Safe mode: render a full-width red banner at the very top,
+        // shifting all other content down by 1 row.
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(size);
+
+        render_safe_mode_banner(frame, chunks[0], app);
+
+        let content_area = chunks[1];
+        match app.active_tab {
+            0 => render_market_tab(frame, content_area, app),
+            1 => render_portfolio_tab(frame, content_area, app),
+            2 => render_agents_tab(frame, content_area, app),
+            3 => render_logs_tab(frame, content_area, app),
+            _ => render_market_tab(frame, content_area, app),
+        }
+    } else {
+        match app.active_tab {
+            0 => render_market_tab(frame, size, app),
+            1 => render_portfolio_tab(frame, size, app),
+            2 => render_agents_tab(frame, size, app),
+            3 => render_logs_tab(frame, size, app),
+            _ => render_market_tab(frame, size, app),
+        }
     }
+}
+
+/// Render the safe mode banner: full-width red background with warning text.
+fn render_safe_mode_banner(frame: &mut Frame, area: Rect, app: &App) {
+    let text = format!(
+        " \u{26A0} SAFE MODE: {} \u{2014} Manual intervention required",
+        app.safe_mode_reason
+    );
+    let paragraph = Paragraph::new(Line::from(Span::styled(
+        text,
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD),
+    )));
+    frame.render_widget(paragraph, area);
 }
 
 /// Market tab: 5-panel layout with tabs bar and cycle status.
@@ -64,7 +100,7 @@ fn render_market_tab(frame: &mut Frame, area: Rect, app: &mut App) {
     render_event_log(frame, main_chunks[4], app);
 }
 
-/// Cycle status bar: shows current cycle stage and focus set.
+/// Cycle status bar: shows current cycle stage, focus set, and trading mode indicator.
 fn render_cycle_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     let focus_str = if app.cycle_focus_set.is_empty() {
         "none".to_string()
@@ -84,6 +120,38 @@ fn render_cycle_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         _ => Color::DarkGray,
     };
 
+    // Trading mode indicator (right-aligned)
+    let (mode_label, mode_style) = if app.safe_mode_active {
+        (
+            " SAFE MODE ",
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        match app.trading_mode.as_str() {
+            "LIVE" => (
+                " LIVE ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            _ => (
+                " PAPER ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        }
+    };
+
+    // Split area: left for cycle info, right for trading mode
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(mode_label.len() as u16 + 2)])
+        .split(area);
+
     let line = Line::from(vec![
         Span::styled(" Cycle: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
@@ -97,7 +165,12 @@ fn render_cycle_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     ]);
 
     let paragraph = Paragraph::new(line);
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, chunks[0]);
+
+    let mode_indicator =
+        Paragraph::new(Line::from(Span::styled(mode_label, mode_style)))
+            .alignment(ratatui::layout::Alignment::Right);
+    frame.render_widget(mode_indicator, chunks[1]);
 }
 
 /// Tabs bar.
@@ -334,6 +407,7 @@ fn render_news(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Positions panel (compact view for Market tab).
+/// Shows a colored dot next to each position if there is an active order.
 fn render_positions(frame: &mut Frame, area: Rect, app: &App) {
     let is_focused = app.focused_panel == PanelId::Positions;
     let border_style = if is_focused {
@@ -348,6 +422,7 @@ fn render_positions(frame: &mut Frame, area: Rect, app: &App) {
         Cell::from("Qty"),
         Cell::from("P&L"),
         Cell::from("P&L %"),
+        Cell::from("Ord"),
     ])
     .style(
         Style::default()
@@ -369,6 +444,23 @@ fn render_positions(frame: &mut Frame, area: Rect, app: &App) {
                 .split('.')
                 .next()
                 .unwrap_or(&pos.instrument_id);
+
+            // Check if there is a recent order for this instrument
+            let order_indicator = app
+                .order_history
+                .iter()
+                .rev()
+                .find(|o| o.instrument == pos.instrument_id)
+                .map(|o| {
+                    let (dot, color) = match o.status.as_str() {
+                        "Filled" => ("\u{25CF}", Color::Green),
+                        "Rejected" | "Canceled" | "Expired" => ("\u{25CF}", Color::Red),
+                        _ => ("\u{25CF}", Color::Yellow), // Pending/Submitted/etc.
+                    };
+                    Cell::from(dot).style(Style::default().fg(color))
+                })
+                .unwrap_or_else(|| Cell::from(""));
+
             Row::new(vec![
                 Cell::from(symbol.to_string()),
                 Cell::from(pos.side.clone()),
@@ -376,6 +468,7 @@ fn render_positions(frame: &mut Frame, area: Rect, app: &App) {
                 Cell::from(pos.pnl.clone()).style(Style::default().fg(pnl_color)),
                 Cell::from(format!("{:+.1}%", pos.pnl_pct))
                     .style(Style::default().fg(pnl_color)),
+                order_indicator,
             ])
         })
         .collect();
@@ -383,11 +476,12 @@ fn render_positions(frame: &mut Frame, area: Rect, app: &App) {
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(25),
-            Constraint::Percentage(15),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
-            Constraint::Percentage(20),
+            Constraint::Percentage(22),
+            Constraint::Percentage(13),
+            Constraint::Percentage(18),
+            Constraint::Percentage(18),
+            Constraint::Percentage(18),
+            Constraint::Percentage(11),
         ],
     )
     .header(header)
@@ -485,24 +579,114 @@ fn render_event_log(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(list, area);
 }
 
-/// Portfolio tab: summary box + detailed positions table.
+/// Portfolio tab: summary box + detailed positions table + order history.
 fn render_portfolio_tab(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // tabs
-            Constraint::Length(5),  // portfolio summary
-            Constraint::Min(0),    // positions table
+            Constraint::Length(3),       // tabs
+            Constraint::Length(1),       // cycle + trading mode status
+            Constraint::Length(5),       // portfolio summary
+            Constraint::Percentage(40), // positions table
+            Constraint::Min(6),         // order history
         ])
         .split(area);
 
     render_tab_bar_only(frame, chunks[0], 1);
 
+    // Cycle + trading mode status bar
+    render_cycle_status_bar(frame, chunks[1], app);
+
     // Portfolio summary box
-    render_portfolio_summary(frame, chunks[1], app);
+    render_portfolio_summary(frame, chunks[2], app);
 
     // Detailed positions table
-    render_portfolio_positions(frame, chunks[2], app);
+    render_portfolio_positions(frame, chunks[3], app);
+
+    // Order history table
+    render_order_history(frame, chunks[4], app);
+}
+
+/// Render order history table (last 20 orders, color-coded by status).
+fn render_order_history(frame: &mut Frame, area: Rect, app: &App) {
+    let header = Row::new(vec![
+        Cell::from("OrderID"),
+        Cell::from("Instrument"),
+        Cell::from("Side"),
+        Cell::from("Type"),
+        Cell::from("Qty"),
+        Cell::from("Status"),
+        Cell::from("Fill Price"),
+        Cell::from("Time"),
+    ])
+    .style(
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let rows: Vec<Row> = app
+        .order_history
+        .iter()
+        .rev()
+        .take(20)
+        .map(|order| {
+            let status_color = match order.status.as_str() {
+                "Filled" => Color::Green,
+                "Rejected" | "Canceled" | "Expired" => Color::Red,
+                _ => Color::Yellow, // Pending/Submitted/Accepted/PartiallyFilled
+            };
+
+            let instrument_short = order
+                .instrument
+                .split('.')
+                .next()
+                .unwrap_or(&order.instrument);
+
+            // Truncate order ID for display
+            let oid_short = if order.client_order_id.len() > 8 {
+                &order.client_order_id[..8]
+            } else {
+                &order.client_order_id
+            };
+
+            Row::new(vec![
+                Cell::from(oid_short.to_string())
+                    .style(Style::default().fg(Color::DarkGray)),
+                Cell::from(instrument_short.to_string()),
+                Cell::from(order.side.clone()),
+                Cell::from(order.order_type.clone()),
+                Cell::from(order.quantity.clone()),
+                Cell::from(order.status.clone())
+                    .style(Style::default().fg(status_color)),
+                Cell::from(order.fill_price.clone()),
+                Cell::from(order.time.clone())
+                    .style(Style::default().fg(Color::DarkGray)),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Percentage(10),
+            Constraint::Percentage(14),
+            Constraint::Percentage(8),
+            Constraint::Percentage(10),
+            Constraint::Percentage(10),
+            Constraint::Percentage(14),
+            Constraint::Percentage(16),
+            Constraint::Percentage(18),
+        ],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Order History "),
+    );
+
+    frame.render_widget(table, area);
 }
 
 /// Render the portfolio summary box.

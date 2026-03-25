@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::enums::{
     AgentRunStatus, BarInterval, CycleStage, EmergencyActionType, LiquiditySide, OrderSide,
-    OrderStatus, OrderType, PositionSide, TimeInForce,
+    OrderStatus, OrderType, PositionSide, SignalOutcomeStatus, TimeInForce,
 };
 use crate::identifiers::{
     ClientOrderId, InstrumentId, PositionId, StrategyId, VenueOrderId, Venue,
@@ -182,5 +182,17 @@ pub struct AgentHeartbeat {
     pub agent_name: String,
     pub status: AgentRunStatus,
     pub last_action: Option<String>,
+    pub timestamp: u64,
+}
+
+/// Signal outcome for tracking signal performance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalOutcome {
+    pub signal_id: Uuid,
+    pub instrument_id: InstrumentId,
+    pub entry_price: Price,
+    pub exit_price: Option<Price>,
+    pub pnl: Option<Money>,
+    pub status: SignalOutcomeStatus,
     pub timestamp: u64,
 }

@@ -27,6 +27,41 @@ kill_switch_enabled = true
 [portfolio]
 initial_capital_usd = 100000.0
 max_positions = 10
+risk_pct_per_trade = 1.0
+
+[research]
+min_volume_usd = 1000000.0
+max_candidates = 10
+scan_interval_secs = 300
+
+[strategy]
+enabled_strategies = ["momentum", "mean_reversion"]
+max_concurrent_signals = 5
+
+[strategy.momentum]
+min_change_pct = 2.0
+hold_hours = 24
+stop_loss_pct = 3.0
+
+[strategy.mean_reversion]
+min_drop_pct = 5.0
+target_recovery_pct = 3.0
+hold_hours = 48
+stop_loss_pct = 5.0
+
+[execution]
+mode = "paper"
+max_open_orders = 10
+order_timeout_secs = 300
+retry_failed_orders = false
+
+[paper]
+slippage_bps = 5
+latency_ms = 100
+
+[persistence]
+db_path = "./bamboo-elf.db"
+save_interval_secs = 30
 
 [tui]
 tick_rate_ms = 250

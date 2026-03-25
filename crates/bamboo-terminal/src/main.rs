@@ -15,7 +15,7 @@ use crossterm::{
 use ratatui::prelude::CrosstermBackend;
 use ratatui::Terminal;
 
-use bamboo_core::{AppConfig, EventBus};
+use bamboo_core::{AppConfig, EventBus, TradingMode};
 use bamboo_runtime::{LocalBus, ShutdownSignal};
 
 use crate::app::App;
@@ -137,6 +137,56 @@ async fn run_app(config: AppConfig) -> Result<()> {
         });
     }
 
+    // ── Execution Agent (Spec 3) ──────────────────────────────────────────
+    // Determine execution config (uses defaults when config sections are absent,
+    // which will be the common case until the other agent finishes adding
+    // ExecutionConfig / PaperConfig / PersistenceConfig to bamboo-core).
+    let execution_config = config.execution.clone().unwrap_or_default();
+    let paper_config = config.paper.clone().unwrap_or_default();
+
+    let trading_mode_str = match execution_config.mode {
+        TradingMode::Paper => "PAPER",
+        TradingMode::LiveConstrained => "LIVE",
+        _ => "PAPER",
+    };
+
+    // Create venue adapter based on config
+    let venue: Arc<dyn bamboo_core::VenueAdapter> = match execution_config.mode {
+        TradingMode::Paper => {
+            let paper = bamboo_runtime::venues::PaperVenue::new(paper_config);
+            paper.start_price_listener(bus.clone());
+            Arc::new(paper)
+        }
+        _ => {
+            // For now, default to paper for all non-paper modes too
+            let paper = bamboo_runtime::venues::PaperVenue::new(paper_config);
+            paper.start_price_listener(bus.clone());
+            Arc::new(paper)
+        }
+    };
+
+    // Spawn execution agent
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        let ec = execution_config.clone();
+        let v = venue.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::agents::run_execution_agent(b, v, ec, s).await;
+        });
+    }
+
+    // Create persistence store if configured
+    if let Some(ref persistence_config) = config.persistence {
+        if let Ok(store) = bamboo_runtime::persistence::StateStore::open(&persistence_config.db_path) {
+            tracing::info!("State persistence enabled: {}", persistence_config.db_path);
+            // Store is available for recovery — agents will use it via bus events
+            drop(store);
+        } else {
+            tracing::warn!("Failed to open state store at {}", persistence_config.db_path);
+        }
+    }
+
     // ── Terminal setup ──────────────────────────────────────────────────────
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -147,7 +197,7 @@ async fn run_app(config: AppConfig) -> Result<()> {
     // Create App state
     let sparkline_window = config.tui.sparkline_window;
     let tick_rate = Duration::from_millis(config.tui.tick_rate_ms);
-    let mut app = App::new(&symbols, sparkline_window);
+    let mut app = App::new(&symbols, sparkline_window, trading_mode_str.to_string());
 
     // Initialize portfolio summary from config
     app.init_portfolio(config.portfolio.initial_capital_usd.amount.as_f64());

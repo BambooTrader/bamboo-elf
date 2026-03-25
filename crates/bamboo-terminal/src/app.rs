@@ -4,8 +4,8 @@ use std::collections::VecDeque;
 use bamboo_core::{BusMessage, Payload};
 
 use crate::widgets::{
-    AgentDetail, AgentStatus, LogEntry, PanelId, PortfolioSummary, PositionRow, WatchlistState,
-    MAX_LOG_ENTRIES,
+    AgentDetail, AgentStatus, LogEntry, OrderRow, PanelId, PortfolioSummary, PositionRow,
+    WatchlistState, MAX_LOG_ENTRIES, MAX_ORDER_HISTORY,
 };
 
 /// Tab names displayed in the UI.
@@ -28,16 +28,26 @@ pub struct App {
     pub cycle_focus_set: Vec<String>,
     // Spec 2: Portfolio summary
     pub portfolio_summary: PortfolioSummary,
+    // Spec 3: Execution + Live Trading
+    pub trading_mode: String,
+    pub safe_mode_active: bool,
+    pub safe_mode_reason: String,
+    pub order_history: VecDeque<OrderRow>,
 }
 
 impl App {
-    pub fn new(symbols: &[String], sparkline_window: usize) -> Self {
+    pub fn new(
+        symbols: &[String],
+        sparkline_window: usize,
+        trading_mode: String,
+    ) -> Self {
         let agents = vec![
             AgentStatus::new("CycleManager", "Idle"),
             AgentStatus::new("Research", "Idle"),
             AgentStatus::new("Strategy", "Idle"),
             AgentStatus::new("Portfolio", "Idle"),
             AgentStatus::new("Risk", "Idle"),
+            AgentStatus::new("Execution", "Idle"),
         ];
 
         let agent_details = vec![
@@ -46,6 +56,7 @@ impl App {
             AgentDetail::new("Strategy"),
             AgentDetail::new("Portfolio"),
             AgentDetail::new("Risk"),
+            AgentDetail::new("Execution"),
         ];
 
         Self {
@@ -63,6 +74,10 @@ impl App {
             cycle_stage: "Idle".to_string(),
             cycle_focus_set: Vec::new(),
             portfolio_summary: PortfolioSummary::default(),
+            trading_mode,
+            safe_mode_active: false,
+            safe_mode_reason: String::new(),
+            order_history: VecDeque::with_capacity(MAX_ORDER_HISTORY),
         }
     }
 
@@ -130,7 +145,34 @@ impl App {
             Payload::ExecutionReport(er) => {
                 // Update agent status on execution reports
                 let status_str = format!("{:?}", er.status);
-                self.update_agent_detail("Risk", &format!("Exec: {status_str}"));
+                self.update_agent_status("Execution", "Running");
+                self.update_agent_detail(
+                    "Execution",
+                    &format!(
+                        "{} {:?} {:?} qty={}",
+                        er.instrument_id, er.side, er.status, er.filled_quantity
+                    ),
+                );
+
+                // Add to order history (ring buffer)
+                let fill_price = er
+                    .avg_fill_price
+                    .map(|p| format!("{:.2}", p.as_f64()))
+                    .unwrap_or_else(|| "-".to_string());
+                let row = OrderRow {
+                    client_order_id: er.client_order_id.to_string(),
+                    instrument: er.instrument_id.to_string(),
+                    side: format!("{:?}", er.side),
+                    order_type: "-".to_string(), // not in ExecutionReport
+                    quantity: er.filled_quantity.to_string(),
+                    status: status_str,
+                    fill_price,
+                    time: chrono::Local::now().format("%H:%M:%S").to_string(),
+                };
+                if self.order_history.len() >= MAX_ORDER_HISTORY {
+                    self.order_history.pop_front();
+                }
+                self.order_history.push_back(row);
             }
             Payload::StrategySignal(sig) => {
                 self.update_agent_status("Strategy", "Running");
@@ -169,6 +211,28 @@ impl App {
                 self.update_agent_detail(
                     "CycleManager",
                     &format!("Stage -> {:?}", c.new_stage),
+                );
+            }
+            Payload::SignalOutcome(so) => {
+                // Spec 3: Log signal outcome and update strategy agent status
+                let pnl_str = so
+                    .pnl
+                    .as_ref()
+                    .map(|m| format!("pnl={:+.2}", m.amount.as_f64()))
+                    .unwrap_or_else(|| "open".to_string());
+                self.update_agent_detail(
+                    "Strategy",
+                    &format!("{} {:?} {}", so.instrument_id, so.status, pnl_str),
+                );
+            }
+            Payload::EmergencyAction(ea) => {
+                // Spec 3: Enter safe mode on emergency actions
+                self.safe_mode_active = true;
+                self.safe_mode_reason = ea.reason.clone();
+                self.update_agent_status("Risk", "Error");
+                self.update_agent_detail(
+                    "Risk",
+                    &format!("EMERGENCY {:?}: {}", ea.action_type, ea.reason),
                 );
             }
             Payload::AgentHeartbeat(h) => {
@@ -383,6 +447,17 @@ fn format_bus_message(msg: &BusMessage) -> String {
             format!(
                 "{} {:?} action={:?}",
                 h.agent_name, h.status, h.last_action
+            )
+        }
+        Payload::SignalOutcome(so) => {
+            let pnl_str = so
+                .pnl
+                .as_ref()
+                .map(|m| format!("pnl={:.2}", m.amount.as_f64()))
+                .unwrap_or_else(|| "pnl=n/a".to_string());
+            format!(
+                "{} {:?} {}",
+                so.instrument_id, so.status, pnl_str
             )
         }
     }

@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::path::Path;
 
+use crate::enums::TradingMode;
 use crate::error::BambooResult;
 use crate::types::{Currency, Money, Price};
 
@@ -15,6 +16,9 @@ pub struct AppConfig {
     pub tui: TuiConfig,
     pub research: Option<ResearchConfig>,
     pub strategy: Option<StrategyConfig>,
+    pub execution: Option<ExecutionConfig>,
+    pub paper: Option<PaperConfig>,
+    pub persistence: Option<PersistenceConfig>,
 }
 
 impl AppConfig {
@@ -158,6 +162,58 @@ impl Default for MeanReversionParams {
             target_recovery_pct: 3.0,
             hold_hours: 48,
             stop_loss_pct: 5.0,
+        }
+    }
+}
+
+/// Execution agent configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecutionConfig {
+    pub mode: TradingMode,
+    pub max_open_orders: usize,
+    pub order_timeout_secs: u64,
+    pub retry_failed_orders: bool,
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        Self {
+            mode: TradingMode::Paper,
+            max_open_orders: 10,
+            order_timeout_secs: 300,
+            retry_failed_orders: false,
+        }
+    }
+}
+
+/// Paper trading simulation configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaperConfig {
+    pub slippage_bps: u32,
+    pub latency_ms: u64,
+}
+
+impl Default for PaperConfig {
+    fn default() -> Self {
+        Self {
+            slippage_bps: 5,
+            latency_ms: 100,
+        }
+    }
+}
+
+/// State persistence configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PersistenceConfig {
+    pub db_path: String,
+    pub save_interval_secs: u64,
+}
+
+impl Default for PersistenceConfig {
+    fn default() -> Self {
+        Self {
+            db_path: "./bamboo-elf.db".to_string(),
+            save_interval_secs: 30,
         }
     }
 }

@@ -185,6 +185,33 @@ pub enum StrategyType {
     MeanReversion,
 }
 
+/// Venue adapter errors.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum VenueError {
+    #[error("order rejected: {0}")]
+    OrderRejected(String),
+    #[error("connection error: {0}")]
+    ConnectionError(String),
+    #[error("rate limit exceeded")]
+    RateLimit,
+    #[error("insufficient funds")]
+    InsufficientFunds,
+    #[error("invalid order: {0}")]
+    InvalidOrder(String),
+    #[error("unknown error: {0}")]
+    Unknown(String),
+}
+
+/// Signal outcome status for tracking signal performance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SignalOutcomeStatus {
+    Open,
+    ProfitTarget,
+    StopLoss,
+    TimedOut,
+    ForceClosed,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

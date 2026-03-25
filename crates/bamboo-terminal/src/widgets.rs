@@ -241,6 +241,24 @@ impl AgentDetail {
     }
 }
 
+// ── Order history ──
+
+/// A single row in the order history table (Spec 3: Execution).
+#[derive(Debug, Clone)]
+pub struct OrderRow {
+    pub client_order_id: String,
+    pub instrument: String,
+    pub side: String,
+    pub order_type: String,
+    pub quantity: String,
+    pub status: String,
+    pub fill_price: String,
+    pub time: String,
+}
+
+/// Maximum number of order history entries kept (ring buffer).
+pub const MAX_ORDER_HISTORY: usize = 100;
+
 // ── Log entries ──
 
 #[derive(Debug, Clone)]

@@ -5,6 +5,7 @@ pub mod messages;
 pub mod bus;
 pub mod error;
 pub mod config;
+pub mod venue;
 
 // Re-export key types at crate root for convenience.
 pub use types::{Price, Quantity, Money, Currency, CurrencyType, FIXED_SCALAR};
@@ -18,17 +19,20 @@ pub use enums::{
     AccountType, BookAction, PriceType, BarInterval, TradingMode,
     CycleStage, EmergencyActionType, FeedStatus,
     AgentRunStatus, StrategyType,
+    VenueError, SignalOutcomeStatus,
 };
 pub use messages::{
     MarketTick, KlineBar, NewsItem, ResearchFinding, StrategySignal,
     PortfolioIntent, RiskDecision, ExecutionOrderIntent, ExecutionReport,
     PositionUpdate, CycleSummary, EmergencyAction,
-    CycleStageChanged, AgentHeartbeat,
+    CycleStageChanged, AgentHeartbeat, SignalOutcome,
 };
 pub use bus::{Topic, Payload, BusMessage, BusError, BusMetrics, BusReceiver, EventBus};
 pub use config::{
     AppConfig, ExchangeConfig, UniverseConfig, CycleConfig,
     RiskLimitsConfig, PortfolioConfig, TuiConfig,
     ResearchConfig, StrategyConfig, MomentumParams, MeanReversionParams,
+    ExecutionConfig, PaperConfig, PersistenceConfig,
 };
 pub use error::{BambooError, BambooResult};
+pub use venue::VenueAdapter;
