@@ -1,5 +1,7 @@
 # Bamboo Elf Configuration Example
-# Copy to config.toml and customize
+# Install: cargo install --git https://github.com/bamboo-elf/bamboo-elf --bin bamboo-elf
+# Then run: bamboo-elf onboard
+# Or copy this file to ~/.bamboo-elf/config.toml and customize
 
 [[exchanges]]
 name = "binance"

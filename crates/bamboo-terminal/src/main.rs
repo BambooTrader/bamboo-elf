@@ -1,4 +1,9 @@
+// Security policy: All network binds are loopback-only (127.0.0.1).
+// No external inbound connections. Outbound WebSocket/REST to exchanges only.
+// SQLite persistence is local-file-only.
+
 mod app;
+mod onboard;
 mod ui;
 mod widgets;
 
@@ -7,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
@@ -19,12 +25,82 @@ use bamboo_core::{AppConfig, EventBus, TradingMode};
 use bamboo_runtime::{LocalBus, ShutdownSignal};
 
 use crate::app::App;
+use crate::onboard::{expand_tilde, resolve_config_path, run_onboard, run_status};
+
+// ── CLI definition ───────────────────────────────────────────────────────────
+
+#[derive(Parser)]
+#[command(name = "bamboo-elf", version, about = "AI-native quantitative trading terminal")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// Config file path
+    #[arg(short, long, default_value = "~/.bamboo-elf/config.toml")]
+    config: String,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Start the trading terminal (default if no subcommand)
+    Run {
+        /// Config file path override
+        #[arg(short, long)]
+        config: Option<String>,
+    },
+    /// Interactive setup wizard — configure exchanges, risk, and strategy
+    Onboard {
+        /// Overwrite existing config
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show current configuration and system status
+    Status,
+    /// Print version and build info
+    Version,
+}
+
+// ── Entry point ──────────────────────────────────────────────────────────────
 
 fn main() -> Result<()> {
-    // Parse CLI args
-    let config_path = parse_config_arg();
+    let cli = Cli::parse();
 
-    // Initialize tracing (to file, not stdout, since stdout is used by TUI)
+    match cli.command {
+        Some(Commands::Onboard { force }) => {
+            run_onboard(force)?;
+        }
+        Some(Commands::Status) => {
+            let config_path = resolve_config_path(Some(&cli.config));
+            run_status(&config_path);
+        }
+        Some(Commands::Version) => {
+            println!(
+                "bamboo-elf {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+            );
+        }
+        Some(Commands::Run { config }) => {
+            let config_path = match config {
+                Some(ref p) => expand_tilde(p),
+                None => resolve_config_path(Some(&cli.config)),
+            };
+            start_terminal(&config_path)?;
+        }
+        None => {
+            // Default: run the terminal
+            let config_path = resolve_config_path(Some(&cli.config));
+            start_terminal(&config_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+// ── Terminal startup ─────────────────────────────────────────────────────────
+
+fn start_terminal(config_path: &str) -> Result<()> {
+    // Initialize tracing (to stderr, not stdout — stdout is used by TUI)
     tracing_subscriber::fmt()
         .with_writer(io::stderr)
         .with_env_filter(
@@ -36,7 +112,7 @@ fn main() -> Result<()> {
     tracing::info!("Loading config from: {}", config_path);
 
     // Load configuration
-    let config = AppConfig::load(&config_path)?;
+    let config = AppConfig::load(config_path)?;
 
     // Build the tokio runtime manually so we control shutdown
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -46,18 +122,6 @@ fn main() -> Result<()> {
     runtime.block_on(async { run_app(config).await })?;
 
     Ok(())
-}
-
-fn parse_config_arg() -> String {
-    let args: Vec<String> = std::env::args().collect();
-    let mut i = 1;
-    while i < args.len() {
-        if args[i] == "--config" && i + 1 < args.len() {
-            return args[i + 1].clone();
-        }
-        i += 1;
-    }
-    "./config.toml".to_string()
 }
 
 async fn run_app(config: AppConfig) -> Result<()> {
@@ -137,9 +201,6 @@ async fn run_app(config: AppConfig) -> Result<()> {
     }
 
     // ── Execution Agent (Spec 3) ──────────────────────────────────────────
-    // Determine execution config (uses defaults when config sections are absent,
-    // which will be the common case until the other agent finishes adding
-    // ExecutionConfig / PaperConfig / PersistenceConfig to bamboo-core).
     let execution_config = config.execution.clone().unwrap_or_default();
     let paper_config = config.paper.clone().unwrap_or_default();
 
