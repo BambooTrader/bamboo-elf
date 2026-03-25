@@ -196,8 +196,11 @@ pub async fn run_research_agent(
     publish_heartbeat(&bus, AgentRunStatus::Running, Some("Started".to_string())).await;
 
     let scan_interval = Duration::from_secs(config.scan_interval_secs);
-    let mut last_scan = tokio::time::Instant::now() - scan_interval; // allow immediate first scan
     let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
+    // scan_tick fires every second; actual scan is gated by scan_interval elapsed check.
+    // Using an interval (not sleep) ensures it fires even when other events are frequent.
+    let mut scan_tick = tokio::time::interval(Duration::from_secs(1));
+    let mut last_scan = tokio::time::Instant::now() - scan_interval; // allow immediate first scan
 
     loop {
         if shutdown.is_shutdown() {
@@ -247,7 +250,7 @@ pub async fn run_research_agent(
                     Err(_) => break,
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+            _ = scan_tick.tick() => {
                 // Periodic scan trigger during Scan phase.
                 if current_stage == CycleStage::Scan && last_scan.elapsed() >= scan_interval {
                     tracing::info!("ResearchAgent performing scan");

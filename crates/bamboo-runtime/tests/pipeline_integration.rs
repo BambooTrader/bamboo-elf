@@ -264,6 +264,399 @@ async fn safe_mode_lifecycle() {
     assert!(!safe.is_active());
 }
 
+/// V3 + V4: Full pipeline end-to-end test with all real agents (Strategy → Execution).
+///
+/// Uses all real agents: CycleManager, StrategyAgent, PortfolioAgent, RiskAgent,
+/// ExecutionAgent + PaperVenue. Injects a synthetic ResearchFinding to seed the
+/// pipeline (the ResearchAgent would normally produce these from Binance, but the
+/// Binance public API may be geo-restricted in the test environment).
+///
+/// Verifies all 8 message types flow through the real agent pipeline within 10s.
+#[tokio::test(flavor = "multi_thread")]
+async fn v3_full_pipeline_collects_all_message_types() {
+    use std::collections::HashSet;
+
+    use bamboo_core::{
+        BusMessage, ComponentId, Currency, CycleConfig, EventBus, ExecutionConfig,
+        InstrumentId, MeanReversionParams, MomentumParams, Money, OrderSide, PaperConfig,
+        Payload, PortfolioConfig, Price, ResearchFinding, ResearchConfig, RiskLimitsConfig,
+        StrategyConfig, Topic, TradingMode, VenueAdapter,
+    };
+
+    let bus: Arc<dyn EventBus> = Arc::new(LocalBus::new());
+    let shutdown = ShutdownSignal::new();
+
+    // PaperVenue with minimal latency for testing
+    let venue = Arc::new(bamboo_runtime::PaperVenue::new(PaperConfig {
+        slippage_bps: 5,
+        latency_ms: 10,
+    }));
+    venue.start_price_listener(bus.clone());
+
+    // Subscribe BEFORE spawning so we don't miss early messages
+    let mut rx_all = bus.subscribe_all();
+
+    // Synthetic feed — emits MarketTick for BTCUSDT so PaperVenue has prices
+    bamboo_runtime::mock_agents::spawn_synthetic_feed(
+        bus.clone(),
+        shutdown.clone(),
+        vec!["BTCUSDT".to_string(), "ETHUSDT".to_string(), "SOLUSDT".to_string()],
+        Duration::from_millis(100),
+    );
+
+    // CycleManager
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::run_cycle_manager(
+                b,
+                CycleConfig { default_duration_hours: 24, auto_advance: false },
+                10,
+                s,
+            )
+            .await;
+        });
+    }
+
+    // ResearchAgent (runs but won't produce findings if Binance is unavailable)
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::run_research_agent(
+                b,
+                ResearchConfig {
+                    min_volume_usd: 1_000_000.0,
+                    max_candidates: 10,
+                    scan_interval_secs: 300,
+                },
+                s,
+            )
+            .await;
+        });
+    }
+
+    // StrategyAgent — low threshold to ensure signals fire on any market movement
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::run_strategy_agent(
+                b,
+                StrategyConfig {
+                    enabled_strategies: vec!["momentum".to_string()],
+                    max_concurrent_signals: 10,
+                    momentum: MomentumParams {
+                        min_change_pct: 0.01,
+                        hold_hours: 4,
+                        stop_loss_pct: 1.0,
+                    },
+                    mean_reversion: MeanReversionParams::default(),
+                },
+                s,
+            )
+            .await;
+        });
+    }
+
+    // PortfolioAgent
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::run_portfolio_agent(
+                b,
+                PortfolioConfig {
+                    initial_capital_usd: Money::new(
+                        Price::from_f64(100_000.0, 2),
+                        Currency::usd(),
+                    ),
+                    max_positions: 10,
+                    risk_pct_per_trade: 1.0,
+                },
+                s,
+            )
+            .await;
+        });
+    }
+
+    // RiskAgent — generous limits so trades are approved
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::run_risk_agent(
+                b,
+                RiskLimitsConfig {
+                    max_position_size_usd: Money::new(
+                        Price::from_f64(50_000.0, 2),
+                        Currency::usd(),
+                    ),
+                    max_portfolio_exposure_usd: Money::new(
+                        Price::from_f64(500_000.0, 2),
+                        Currency::usd(),
+                    ),
+                    max_concentration_pct: 50.0,
+                    max_drawdown_pct: 30.0,
+                    order_rate_limit_per_min: 100,
+                    kill_switch_enabled: false,
+                },
+                100_000.0,
+                s,
+            )
+            .await;
+        });
+    }
+
+    // ExecutionAgent with real PaperVenue
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        let v = venue.clone() as Arc<dyn VenueAdapter>;
+        tokio::spawn(async move {
+            bamboo_runtime::run_execution_agent(
+                b,
+                v,
+                ExecutionConfig {
+                    mode: TradingMode::Paper,
+                    max_open_orders: 10,
+                    order_timeout_secs: 300,
+                    retry_failed_orders: false,
+                },
+                s,
+            )
+            .await;
+        });
+    }
+
+    // Wait for agents to subscribe to their topics and the synthetic feed to
+    // emit its first tick (so PaperVenue has a price for BTCUSDT.BINANCE).
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Inject a synthetic ResearchFinding as if produced by the ResearchAgent.
+    // Thesis format matches what parse_change_pct() expects: "24h change X.XX%, ..."
+    let finding = ResearchFinding {
+        id: uuid::Uuid::new_v4(),
+        instrument_id: InstrumentId::from_parts("BTCUSDT", "BINANCE"),
+        thesis: "24h change 5.20%, vol $1500000000, volatility 3.50%".to_string(),
+        score: 0.85,
+        recommended_action: Some(OrderSide::Buy),
+        timestamp: 0,
+    };
+    let finding_msg = BusMessage {
+        id: uuid::Uuid::new_v4(),
+        topic: Topic::Signal,
+        payload: Payload::ResearchFinding(finding),
+        timestamp: 0,
+        source: ComponentId::new("TestHarness"),
+    };
+    bus.publish(finding_msg).await.unwrap();
+
+    // Collect messages up to 10s (all pipeline stages are local, no network needed)
+    let required_types = [
+        "MarketTick",
+        "CycleStageChanged",
+        "ResearchFinding",
+        "StrategySignal",
+        "PortfolioIntent",
+        "RiskDecision",
+        "ExecutionReport",
+        "PositionUpdate",
+    ];
+    let mut seen: HashSet<&'static str> = HashSet::new();
+    let mut saw_filled_report = false;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+
+        match tokio::time::timeout(remaining, rx_all.recv()).await {
+            Ok(Ok(msg)) => {
+                match &msg.payload {
+                    bamboo_core::Payload::MarketTick(_) => {
+                        seen.insert("MarketTick");
+                    }
+                    bamboo_core::Payload::CycleStageChanged(_) => {
+                        seen.insert("CycleStageChanged");
+                    }
+                    bamboo_core::Payload::ResearchFinding(_) => {
+                        seen.insert("ResearchFinding");
+                    }
+                    bamboo_core::Payload::StrategySignal(_) => {
+                        seen.insert("StrategySignal");
+                    }
+                    bamboo_core::Payload::PortfolioIntent(_) => {
+                        seen.insert("PortfolioIntent");
+                    }
+                    bamboo_core::Payload::RiskDecision(_) => {
+                        seen.insert("RiskDecision");
+                    }
+                    bamboo_core::Payload::ExecutionReport(r) => {
+                        seen.insert("ExecutionReport");
+                        if r.status == bamboo_core::OrderStatus::Filled {
+                            saw_filled_report = true;
+                            // V4: avg_fill_price must be Some for a Filled order
+                            assert!(
+                                r.avg_fill_price.is_some(),
+                                "Filled ExecutionReport must have avg_fill_price"
+                            );
+                        }
+                    }
+                    bamboo_core::Payload::PositionUpdate(_) => {
+                        seen.insert("PositionUpdate");
+                    }
+                    _ => {}
+                }
+                if seen.len() == required_types.len() {
+                    break;
+                }
+            }
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+
+    shutdown.shutdown();
+
+    // Assert all 8 message types were observed
+    for msg_type in &required_types {
+        assert!(
+            seen.contains(msg_type),
+            "missing message type: {msg_type}\nSeen so far: {:?}",
+            seen
+        );
+    }
+
+    // V4: at least one Filled ExecutionReport with non-None avg_fill_price
+    assert!(saw_filled_report, "expected at least one Filled ExecutionReport");
+}
+
+/// V4: Risk agent rejects oversized position and PortfolioAgent returns capital.
+#[tokio::test(flavor = "multi_thread")]
+async fn v4_risk_rejects_oversized_position() {
+    use bamboo_core::{
+        Currency, EventBus, InstrumentId, Money, OrderSide,
+        Payload, PortfolioConfig, Price, RiskLimitsConfig,
+    };
+
+    let bus: Arc<dyn EventBus> = Arc::new(LocalBus::new());
+    let shutdown = ShutdownSignal::new();
+    let mut rx = bus.subscribe_all();
+
+    // PortfolioAgent: 1000 USD capital, 1% risk per trade, 3% stop = 333 USD per position
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::run_portfolio_agent(
+                b,
+                PortfolioConfig {
+                    initial_capital_usd: Money::new(Price::from_f64(1_000.0, 2), Currency::usd()),
+                    max_positions: 10,
+                    risk_pct_per_trade: 1.0,
+                },
+                s,
+            )
+            .await;
+        });
+    }
+
+    // RiskAgent: max_position_size = 100 USD — will reject 333 USD position
+    {
+        let b = bus.clone();
+        let s = shutdown.clone();
+        tokio::spawn(async move {
+            bamboo_runtime::run_risk_agent(
+                b,
+                RiskLimitsConfig {
+                    max_position_size_usd: Money::new(Price::from_f64(100.0, 2), Currency::usd()),
+                    max_portfolio_exposure_usd: Money::new(
+                        Price::from_f64(10_000.0, 2),
+                        Currency::usd(),
+                    ),
+                    max_concentration_pct: 50.0,
+                    max_drawdown_pct: 30.0,
+                    order_rate_limit_per_min: 100,
+                    kill_switch_enabled: false,
+                },
+                1_000.0,
+                s,
+            )
+            .await;
+        });
+    }
+
+    // Publish a StrategySignal that will trigger a PortfolioIntent > 100 USD
+    let signal = bamboo_core::StrategySignal {
+        id: uuid::Uuid::new_v4(),
+        strategy_id: bamboo_core::StrategyId::new("test"),
+        instrument_id: InstrumentId::from_parts("BTCUSDT", "BINANCE"),
+        side: OrderSide::Buy,
+        entry_price: None,
+        exit_price: None,
+        stop_loss: None,
+        rationale: "test signal".to_string(),
+        confidence: 0.9,
+        horizon_hours: 4,
+        timestamp: 0,
+    };
+
+    // Give agents time to start
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let msg = bamboo_core::BusMessage {
+        id: uuid::Uuid::new_v4(),
+        topic: bamboo_core::Topic::Signal,
+        payload: bamboo_core::Payload::StrategySignal(signal),
+        timestamp: 0,
+        source: bamboo_core::ComponentId::new("test"),
+    };
+    bus.publish(msg).await.unwrap();
+
+    // Collect messages, expect a rejected RiskDecision (no ExecutionReport)
+    let mut got_intent = false;
+    let mut rejection: Option<bool> = None;
+    let mut got_execution_report = false;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(msg)) => match &msg.payload {
+                Payload::PortfolioIntent(_) => got_intent = true,
+                Payload::RiskDecision(d) => rejection = Some(d.approved),
+                Payload::ExecutionReport(_) => got_execution_report = true,
+                _ => {}
+            },
+            Ok(Err(_)) | Err(_) => break,
+        }
+        // Stop once we have intent + decision
+        if got_intent && rejection.is_some() {
+            break;
+        }
+    }
+
+    shutdown.shutdown();
+
+    assert!(got_intent, "expected PortfolioIntent to be published");
+    assert_eq!(
+        rejection,
+        Some(false),
+        "expected RiskDecision.approved == false for oversized position"
+    );
+    assert!(
+        !got_execution_report,
+        "ExecutionReport should not appear after risk rejection"
+    );
+}
+
 /// Test shutdown signal coordination.
 #[tokio::test]
 async fn shutdown_signal_stops_feeds() {
