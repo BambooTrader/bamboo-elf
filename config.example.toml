@@ -1,0 +1,33 @@
+# Bamboo Elf Configuration Example
+# Copy to config.toml and customize
+
+[[exchanges]]
+name = "binance"
+ws_url = "wss://stream.binance.com:9443/ws"
+rest_url = "https://api.binance.com"
+api_key_env = "BINANCE_API_KEY"
+api_secret_env = "BINANCE_API_SECRET"
+
+[universe]
+default_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+max_focus_set = 10
+
+[cycle]
+default_duration_hours = 24
+auto_advance = false
+
+[risk]
+max_position_size_usd = 10000.0
+max_portfolio_exposure_usd = 50000.0
+max_concentration_pct = 25
+max_drawdown_pct = 10
+order_rate_limit_per_min = 10
+kill_switch_enabled = true
+
+[portfolio]
+initial_capital_usd = 100000.0
+max_positions = 10
+
+[tui]
+tick_rate_ms = 250
+sparkline_window = 120

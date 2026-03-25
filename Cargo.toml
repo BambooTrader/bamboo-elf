@@ -1,0 +1,50 @@
+[workspace]
+members = [
+    "crates/bamboo-core",
+    "crates/bamboo-runtime",
+    "crates/bamboo-terminal",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync", "signal", "fs"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# IDs and time
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# HTTP/WebSocket
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+
+# Async utilities
+async-trait = "0.1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+# Internal crates
+bamboo-core = { path = "crates/bamboo-core" }
+bamboo-runtime = { path = "crates/bamboo-runtime" }
+bamboo-terminal = { path = "crates/bamboo-terminal" }

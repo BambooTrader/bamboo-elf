@@ -1,0 +1,21 @@
+[package]
+name = "bamboo-terminal"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bamboo-elf"
+path = "src/main.rs"
+
+[dependencies]
+bamboo-core = { workspace = true }
+bamboo-runtime = { workspace = true }
+tokio = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
