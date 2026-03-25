@@ -956,3 +956,79 @@ fn truncate_str(s: &str, max_len: usize) -> String {
         format!("{}...", &s[..max_len.saturating_sub(3)])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    use super::*;
+
+    fn make_app() -> App {
+        App::new(
+            &["BTCUSDT".to_string(), "ETHUSDT".to_string()],
+            60,
+            "paper".to_string(),
+        )
+    }
+
+    /// V6: TUI renders all 4 tabs without panicking.
+    #[test]
+    fn tui_renders_all_tabs_no_panic() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = make_app();
+
+        for tab in 0..4 {
+            app.active_tab = tab;
+            terminal
+                .draw(|frame| render(frame, &mut app))
+                .unwrap_or_else(|_| panic!("render panicked on tab {tab}"));
+        }
+    }
+
+    /// V6: Market tab renders expected panel labels.
+    #[test]
+    fn tui_market_tab_contains_expected_text() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = make_app();
+        app.active_tab = 0;
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+
+        assert!(content.contains("Market"), "expected 'Market' tab label");
+        assert!(content.contains("Watchlist") || content.contains("BTCUSDT"),
+            "expected watchlist content");
+    }
+
+    /// V6: Safe mode banner renders when active.
+    #[test]
+    fn tui_safe_mode_banner_renders() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = make_app();
+        app.safe_mode_active = true;
+        app.safe_mode_reason = "drawdown limit".to_string();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect();
+
+        assert!(
+            content.contains("SAFE MODE"),
+            "expected SAFE MODE banner in buffer"
+        );
+    }
+}
