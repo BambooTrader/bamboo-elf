@@ -331,15 +331,15 @@ auto_advance = false
 [risk]
 max_position_size_usd = {max_pos:.1}
 max_portfolio_exposure_usd = {max_exp:.1}
-max_concentration_pct = {max_conc}
-max_drawdown_pct = {max_dd}
+max_concentration_pct = {max_conc:.1}
+max_drawdown_pct = {max_dd:.1}
 order_rate_limit_per_min = {rate_limit}
 kill_switch_enabled = true
 
 [portfolio]
 initial_capital_usd = {capital:.1}
 max_positions = {max_positions}
-risk_pct_per_trade = {risk_pct}
+risk_pct_per_trade = {risk_pct:.2}
 
 [research]
 min_volume_usd = 1000000.0
